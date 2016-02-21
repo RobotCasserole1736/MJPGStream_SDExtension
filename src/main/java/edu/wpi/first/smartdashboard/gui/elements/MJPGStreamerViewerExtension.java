@@ -1,13 +1,16 @@
 package edu.wpi.first.smartdashboard.gui.elements;
 
-import edu.wpi.first.smartdashboard.gui.DashboardPrefs;
 import edu.wpi.first.smartdashboard.gui.StaticWidget;
+import edu.wpi.first.smartdashboard.properties.BooleanProperty;
 import edu.wpi.first.smartdashboard.properties.IntegerProperty;
 import edu.wpi.first.smartdashboard.properties.Property;
 import edu.wpi.first.smartdashboard.properties.StringProperty;
+import edu.wpi.first.wpilibj.networktables.*;
 
+import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
+import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.geom.AffineTransform;
@@ -22,12 +25,18 @@ import javax.imageio.ImageIO;
 
 /**
  *
- * @author Greg Granito
+ * @author Nick Dunne
  */
 public class MJPGStreamerViewerExtension extends StaticWidget {
 
-    public static final String NAME = "MJPG Streamer Camera Viewer";
+    /**
+	 * 
+	 */
+	private static final long serialVersionUID = 3280022425547727170L;
 
+	public static final String NAME = "MJPG Streamer Camera Switcher";
+    
+    private NetworkTable networkTable; 
 
     private static final int[] START_BYTES = new int[]{0xFF, 0xD8};
     private static final int[] END_BYTES = new int[]{0xFF, 0xD9};
@@ -35,10 +44,18 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
     private boolean ipChanged = true;
     private String ipString = null;
     private double rotateAngleRad = 0;
+    private double rotate2AngleRad = 0;
     private int port = 0;
+    private int port2 = 0;
     private long lastFPSCheck = 0;
     private int lastFPS = 0;
     private int fpsCounter = 0;
+    private boolean useCamera1 = true;
+    private int crosshairX = 0;
+    private int crosshairY = 0;
+    private int crosshairSize = 0;
+    private boolean swapCameras = false;
+    private Font camFont = new Font("Arial", Font.BOLD, 20);
     public class BGThread extends Thread {
 
         boolean destroyed = false;
@@ -51,27 +68,40 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
         @Override
         public void run() {
             URLConnection connection = null;
+            URLConnection connection2 = null;
             InputStream stream = null;
+            InputStream stream2 = null;
             ByteArrayOutputStream imageBuffer = new ByteArrayOutputStream();
             while (!destroyed) {
                 try{
-                    System.out.println("Connecting to camera");
+                    System.out.println("Connecting to camera 1");
                     ipChanged = false;
                     URL url = new URL("http://"+ipString+":"+port+"/?action=stream");
+                    URL url2 = new URL("http://"+ipString+":"+port2+"/?action=stream");
                     connection = url.openConnection();
                     connection.setReadTimeout(250);
                     stream = connection.getInputStream();
+                    connection2 = url2.openConnection();
+                    connection2.setReadTimeout(250);
+                    stream2 = connection2.getInputStream();
+                    networkTable = NetworkTable.getTable("SmartDashboard");
 
                     while(!destroyed && !ipChanged){
                         while(System.currentTimeMillis()-lastRepaint<10){
                             stream.skip(stream.available());
+                            stream2.skip(stream2.available());
                             Thread.sleep(1);
                         }
                         stream.skip(stream.available());
+                        stream2.skip(stream2.available());
+                        
+                        useCamera1 = networkTable.getBoolean("useCamera1", true);
+                        if(swapCameras)
+                        	useCamera1 = !useCamera1;
 
                         imageBuffer.reset();
                         for(int i = 0; i<START_BYTES.length;){
-                            int b = stream.read();
+                            int b = useCamera1? stream.read() : stream2.read();
                             if(b==START_BYTES[i])
                                 i++;
                             else
@@ -81,7 +111,7 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
                             imageBuffer.write(START_BYTES[i]);
 
                         for(int i = 0; i<END_BYTES.length;){
-                            int b = stream.read();
+                            int b = useCamera1? stream.read() : stream2.read();
                             imageBuffer.write(b);
                             if(b==END_BYTES[i])
                                 i++;
@@ -120,20 +150,33 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
         @Override
         public void destroy() {
             destroyed = true;
+            
         }
     }
     private BufferedImage imageToDraw;
     private BGThread bgThread = new BGThread();
-    public final StringProperty ipProperty = new StringProperty(this, "Robot IP Address or mDNS name", "roborio-330-frc.local");
+    public final StringProperty ipProperty = new StringProperty(this, "Robot IP Address or mDNS name", "roborio-1736-frc.local");
     public final IntegerProperty portProperty = new IntegerProperty(this, "port", 5800);
+    public final IntegerProperty port2Property = new IntegerProperty(this, "port 2", 5801);
     public final IntegerProperty rotateProperty = new IntegerProperty(this, "Degrees Rotation", 0);
+    public final IntegerProperty rotate2Property = new IntegerProperty(this, "Cam2 Degrees Rotation", 0);
+    public final IntegerProperty crosshairXProperty = new IntegerProperty(this, "Crosshair X", 0);
+    public final IntegerProperty crosshairYProperty = new IntegerProperty(this, "Crosshair Y", 0);
+    public final IntegerProperty crosshairSizeProperty = new IntegerProperty(this, "Crosshair size", 0);
+    public final BooleanProperty swapCamerasProperty = new BooleanProperty(this, "Swap Cameras", false);
 
     @Override
     public void init() {
         setPreferredSize(new Dimension(160, 120));
         ipString = ipProperty.getSaveValue();
         rotateAngleRad = Math.toRadians(rotateProperty.getValue());
+        rotate2AngleRad = Math.toRadians(rotate2Property.getValue());
         port = portProperty.getValue();
+        port2 = port2Property.getValue();
+        crosshairX = crosshairXProperty.getValue();
+        crosshairY = crosshairYProperty.getValue();
+        crosshairSize = crosshairSizeProperty.getValue();
+        swapCameras = swapCamerasProperty.getValue();
         bgThread.start();
         revalidate();
         repaint();
@@ -148,9 +191,28 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
         if (property == rotateProperty) {
             rotateAngleRad = Math.toRadians(rotateProperty.getValue());
         }
+        if (property == rotate2Property) {
+        	rotate2AngleRad = Math.toRadians(rotate2Property.getValue());
+        }
         if (property == portProperty) {
             port = portProperty.getValue();
             ipChanged = true;
+        }
+        if (property == port2Property) {
+        	port2 = port2Property.getValue();
+        	ipChanged = true;
+        }
+        if (property == crosshairXProperty) {
+        	crosshairX = crosshairXProperty.getValue();
+        }
+        if (property == crosshairYProperty) {
+        	crosshairY = crosshairYProperty.getValue();
+        }
+        if (property == crosshairSizeProperty) {
+        	crosshairSize = crosshairSizeProperty.getValue();
+        }
+        if(property == swapCamerasProperty) {
+        	swapCameras = swapCamerasProperty.getValue();
         }
     }
 
@@ -165,6 +227,7 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
         BufferedImage drawnImage = imageToDraw;
 
         if (drawnImage != null) {
+        	double rotate = useCamera1 ? rotateAngleRad : rotate2AngleRad;
             // cast the Graphics context into a Graphics2D
             Graphics2D g2d = (Graphics2D)g;
 
@@ -183,8 +246,8 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
             double panelHeight = getBounds().height;
             double panelCenterX = panelWidth/2.0;
             double panelCenterY = panelHeight/2.0;
-            double rotatedImageWidth = origImageWidth * Math.abs(Math.cos(rotateAngleRad)) + origImageHeight * Math.abs(Math.sin(rotateAngleRad));
-            double rotatedImageHeight = origImageWidth * Math.abs(Math.sin(rotateAngleRad)) + origImageHeight * Math.abs(Math.cos(rotateAngleRad));
+            double rotatedImageWidth = origImageWidth * Math.abs(Math.cos(rotate)) + origImageHeight * Math.abs(Math.sin(rotate));
+            double rotatedImageHeight = origImageWidth * Math.abs(Math.sin(rotate)) + origImageHeight * Math.abs(Math.cos(rotate));
 
             // compute scaling needed
             double scale = Math.min(panelWidth / rotatedImageWidth, panelHeight / rotatedImageHeight);
@@ -194,7 +257,7 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
             // 2 - perform the desired rotation (rotation will be about origin)
             // 3 - perform the desired scaling (will scale centered about origin)
             newXform.translate(panelCenterX,  panelCenterY);
-            newXform.rotate(rotateAngleRad);
+            newXform.rotate(rotate);
             newXform.scale(scale, scale);
             g2d.setTransform(newXform);
 
@@ -206,6 +269,25 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
 
             g.setColor(Color.PINK);
             g.drawString("FPS: "+lastFPS, 10, 10);
+            
+            g2d.setStroke(new BasicStroke(8));
+            g2d.setFont(camFont);
+            if(useCamera1)
+            {
+            	g2d.setColor(Color.GREEN);
+            	g2d.drawString("CAM 1", 80, 20);
+            }
+            else
+            {
+            	g2d.setColor(Color.MAGENTA);
+            	g2d.drawString("CAM 2", 80, 20);
+            }
+            
+            if(crosshairSize > 0)
+            {
+            	g2d.setColor(Color.YELLOW);
+            	g2d.drawOval(crosshairX, crosshairY, crosshairSize, crosshairSize);
+            }
         } else {
             g.setColor(Color.PINK);
             g.fillRect(0, 0, getBounds().width, getBounds().height);
