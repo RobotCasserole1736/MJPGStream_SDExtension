@@ -17,11 +17,17 @@ import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
 import java.net.URLConnection;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 import javax.imageio.ImageIO;
+
+import org.jcodec.api.awt.SequenceEncoder8Bit;
 
 /**
  *
@@ -56,6 +62,7 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
     private int crosshairSize = 0;
     private boolean swapCameras = false;
     private Font camFont = new Font("Arial", Font.BOLD, 20);
+    private SequenceEncoder8Bit encoder = null;
     public class BGThread extends Thread {
 
         boolean destroyed = false;
@@ -81,9 +88,18 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
                     connection = url.openConnection();
                     connection.setReadTimeout(250);
                     stream = connection.getInputStream();
+                    System.out.println("Connecting to camera 2");
                     connection2 = url2.openConnection();
                     connection2.setReadTimeout(250);
                     stream2 = connection2.getInputStream();
+                    try {
+                    	DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
+                    	String currentTime = LocalDateTime.now().format(formatter);
+                    	System.out.println("Creating file " + currentTime + "_camFeed4.mp4");
+        				encoder = new SequenceEncoder8Bit(new File(currentTime + "_camFeed.mp4"));
+        			} catch (IOException e1) {
+        				System.out.println("Error: Encoder could not be created");
+        			}
                     networkTable = NetworkTable.getTable("SmartDashboard");
 
                     while(!destroyed && !ipChanged){
@@ -108,7 +124,9 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
                                 i = 0;
                         }
                         for(int i = 0; i<START_BYTES.length;++i)
+                        {
                             imageBuffer.write(START_BYTES[i]);
+                        }
 
                         for(int i = 0; i<END_BYTES.length;){
                             int b = useCamera1? stream.read() : stream2.read();
@@ -129,13 +147,24 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
                         lastRepaint = System.currentTimeMillis();
                         ByteArrayInputStream tmpStream = new ByteArrayInputStream(imageBuffer.toByteArray());
                         imageToDraw = ImageIO.read(tmpStream);
+                        if(encoder != null)
+                        	encoder.encodeImage(imageToDraw);
                         repaint();
                     }
 
                 } catch(Exception e){
                     imageToDraw = null;
                     repaint();
-                    e.printStackTrace();
+                    System.out.println("Error: Connection to camera failed");
+					try {
+						if(encoder != null)
+						{
+							encoder.finish();
+							encoder = null;
+						}
+					} catch (IOException e1) {
+						System.out.println("Error: Encoder unable to finish");
+					}
                 }
 
                 if(!ipChanged){
@@ -150,7 +179,15 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
         @Override
         public void destroy() {
             destroyed = true;
-            
+            try {
+            	if(encoder != null)
+            	{
+            		encoder.finish();
+            		encoder = null;
+            	}
+			} catch (IOException e) {
+				System.out.println("Error: Encoder unable to finish");
+			}
         }
     }
     private BufferedImage imageToDraw;
@@ -218,6 +255,16 @@ public class MJPGStreamerViewerExtension extends StaticWidget {
 
     @Override
     public void disconnect() {
+			try {
+		    	if(encoder != null)
+		    	{
+		    		encoder.finish();
+		    		encoder = null;
+		    	}
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				System.out.println("Error: Encoder unable to finish");
+			}
         bgThread.destroy();
         super.disconnect();
     }
